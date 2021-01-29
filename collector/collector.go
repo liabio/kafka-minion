@@ -2,6 +2,7 @@ package collector
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google-cloud-tools/kafka-minion/options"
@@ -82,7 +83,7 @@ func NewCollector(opts *options.Options, storage *storage.MemoryStorage) *Collec
 	groupPartitionLagDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(opts.MetricsPrefix, "group_topic_partition", "lag"),
 		"Number of messages the consumer group is behind for a partition",
-		[]string{"group", "group_base_name", "group_is_latest", "group_version", "topic", "partition"}, prometheus.Labels{},
+		[]string{"group", "group_base_name", "group_is_latest", "group_version", "topic", "partition", "consumer_host", "consumer_id"}, prometheus.Labels{},
 	)
 	groupTopicLagDesc = prometheus.NewDesc(
 		prometheus.BuildFQName(opts.MetricsPrefix, "group_topic", "lag"),
@@ -329,7 +330,27 @@ func (e *Collector) collectConsumerOffsets(ch chan<- prometheus.Metric, offsets 
 			}
 		}
 		groupLagsByGroupName[offset.Group].lagByTopic[offset.Topic] += lag
-
+		consumerGroupsMeta := e.storage.GroupMetadata()[offset.Group]
+		var consumerHost, consumerId string
+		if consumerGroupsMeta.Members != nil {
+			for _, member := range consumerGroupsMeta.Members {
+				isFound := false
+				if partitions, ok := member.Assignment[offset.Topic]; ok {
+					for _, part := range partitions {
+						if part == offset.Partition {
+							isFound = true
+							break
+						}
+					}
+				}
+				if isFound {
+					// Remove the first character /
+					consumerHost = strings.ReplaceAll(member.ClientHost, "/", "")
+					consumerId = member.MemberID
+					break
+				}
+			}
+		}
 		ch <- prometheus.MustNewConstMetric(
 			groupPartitionLagDesc,
 			prometheus.GaugeValue,
@@ -340,6 +361,8 @@ func (e *Collector) collectConsumerOffsets(ch chan<- prometheus.Metric, offsets 
 			strconv.Itoa(int(group.Version)),
 			offset.Topic,
 			strconv.Itoa(int(offset.Partition)),
+			consumerHost,
+			consumerId,
 		)
 	}
 

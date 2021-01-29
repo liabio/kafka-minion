@@ -190,7 +190,8 @@ func (module *OffsetConsumer) processMessage(msg *sarama.ConsumerMessage) {
 	case 0, 1:
 		module.processOffsetCommit(key, value, logger)
 	case 2:
-		// module.processGroupMetadata(key, value, logger)
+		// set consumer group metadata info, example: member host、consumerID etc.
+		module.processGroupMetadata(key, value, logger)
 	default:
 		logger.WithFields(log.Fields{
 			"reason":  "unknown key version",
