@@ -1,94 +1,104 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"github.com/cloudhut/kminion/v2/kafka"
+	"github.com/cloudhut/kminion/v2/logging"
+	"github.com/cloudhut/kminion/v2/minion"
+	"github.com/cloudhut/kminion/v2/prometheus"
+	promclient "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.uber.org/zap"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
-
-	"github.com/Shopify/sarama"
-	"github.com/google-cloud-tools/kafka-minion/collector"
-	"github.com/google-cloud-tools/kafka-minion/kafka"
-	"github.com/google-cloud-tools/kafka-minion/options"
-	"github.com/google-cloud-tools/kafka-minion/storage"
-	"github.com/kelseyhightower/envconfig"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
-	log "github.com/sirupsen/logrus"
+	"time"
 )
 
 func main() {
-	// Initialize logger
-	log.SetOutput(os.Stdout)
-	log.SetFormatter(&log.JSONFormatter{})
-
-	// Parse and validate environment variables
-	opts := options.NewOptions()
-	var err error
-	err = envconfig.Process("", opts)
+	startupLogger, err := zap.NewProduction()
 	if err != nil {
-		log.Fatal("Error parsing env vars into opts. ", err)
+		panic(fmt.Errorf("failed to create startup logger: %w", err))
 	}
 
-	// Set log level from environment variables
-	level, err := log.ParseLevel(opts.LogLevel)
+	cfg, err := newConfig(startupLogger)
 	if err != nil {
-		log.Panicf("Loglevel could not be parsed. See logrus documentation for valid log level inputs. Given input was '%v'", opts.LogLevel)
-	}
-	log.SetLevel(level)
-	if level == log.DebugLevel {
-		sarama.Logger = log.StandardLogger().WithField("source", "sarama")
+		startupLogger.Fatal("failed to parse config", zap.Error(err))
 	}
 
-	log.Infof("Starting kafka minion version%v", opts.Version)
-	// Create cross package shared dependencies
-	consumerOffsetsCh := make(chan *kafka.StorageRequest, 1000)
-	clusterCh := make(chan *kafka.StorageRequest, 200)
+	logger := logging.NewLogger(cfg.Logger, cfg.Exporter.Namespace)
+	if err != nil {
+		startupLogger.Fatal("failed to create new logger", zap.Error(err))
+	}
 
-	// Create storage module
-	cache := storage.NewMemoryStorage(opts, consumerOffsetsCh, clusterCh)
-	cache.Start()
+	logger.Info("started kminion", zap.String("version", cfg.Version))
 
-	// Create cluster module
-	cluster := kafka.NewCluster(opts, clusterCh)
-	cluster.Start()
-
-	// Create kafka consumer
-	consumer := kafka.NewOffsetConsumer(opts, consumerOffsetsCh)
-	consumer.Start()
-
-	// Create prometheus collector
-	collector := collector.NewCollector(opts, cache)
-	prometheus.MustRegister(collector)
-
-	// Start listening on /metrics endpoint
-	http.Handle("/metrics", promhttp.Handler())
-	http.Handle("/healthcheck", healthCheck(cluster))
-	http.Handle("/readycheck", readyCheck(cache))
-	listenAddress := net.JoinHostPort(opts.TelemetryHost, strconv.Itoa(opts.TelemetryPort))
-	log.Infof("Listening on: '%s", listenAddress)
-	log.Fatal(http.ListenAndServe(listenAddress, nil))
-}
-
-func healthCheck(cluster *kafka.Cluster) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if cluster.IsHealthy() {
-			w.Write([]byte("Healthy"))
-		} else {
-			http.Error(w, "Healthcheck failed", http.StatusServiceUnavailable)
+	// Setup context that cancels when the application receives an interrupt signal
+	ctx, cancel := context.WithCancel(context.Background())
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	defer func() {
+		signal.Stop(c)
+		cancel()
+	}()
+	go func() {
+		select {
+		case <-c:
+			logger.Info("received a signal, going to shut down KMinion")
+			cancel()
+		case <-ctx.Done():
 		}
-	})
-}
+	}()
 
-// readyCheck only returns 200 when it has initially consumed the __consumer_offsets topic
-// Utilizing this ready check you can ensure to slow down rolling updates until a pod is ready
-// to expose consumer group metrics which are up to date
-func readyCheck(storage *storage.MemoryStorage) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if storage.IsConsumed() {
-			w.Write([]byte("Ready"))
-		} else {
-			http.Error(w, "Offsets topic has not been consumed yet", http.StatusServiceUnavailable)
-		}
-	})
+	// Create kafka service and check if client can successfully connect to Kafka cluster
+	kafkaSvc, err := kafka.NewService(cfg.Kafka, logger)
+	if err != nil {
+		logger.Fatal("failed to setup kafka service", zap.Error(err))
+	}
+	connectCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = kafkaSvc.TestConnection(connectCtx)
+	if err != nil {
+		logger.Fatal("failed to test connectivity to Kafka cluster", zap.Error(err))
+	}
+
+	// Create minion service that does most of the work. The Prometheus exporter only talks to the minion service
+	// which issues all the requests to Kafka and wraps the interface accordingly.
+	minionSvc, err := minion.NewService(cfg.Minion, logger, kafkaSvc)
+	if err != nil {
+		logger.Fatal("failed to setup minion service", zap.Error(err))
+	}
+	err = minionSvc.Start(ctx)
+	if err != nil {
+		logger.Fatal("failed to start minion service", zap.Error(err))
+	}
+
+	// The Prometheus exporter that implements the Prometheus collector interface
+	exporter, err := prometheus.NewExporter(cfg.Exporter, logger, minionSvc)
+	if err != nil {
+		logger.Fatal("failed to setup prometheus exporter", zap.Error(err))
+	}
+	exporter.InitializeMetrics()
+
+	promclient.MustRegister(exporter)
+	http.Handle("/metrics",
+		promhttp.InstrumentMetricHandler(
+			promclient.DefaultRegisterer,
+			promhttp.HandlerFor(
+				promclient.DefaultGatherer,
+				promhttp.HandlerOpts{},
+			),
+		),
+	)
+
+	// Start HTTP server
+	address := net.JoinHostPort(cfg.Exporter.Host, strconv.Itoa(cfg.Exporter.Port))
+	logger.Info("listening on address", zap.String("listen_address", address))
+	if err := http.ListenAndServe(address, nil); err != nil {
+		logger.Error("error starting HTTP server", zap.Error(err))
+		os.Exit(1)
+	}
 }
