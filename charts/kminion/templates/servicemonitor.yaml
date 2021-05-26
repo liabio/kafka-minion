@@ -3,6 +3,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{include "kminion.fullname" .}}
+  namespace: {{ .Release.Namespace | quote }}
   labels:
     {{- include "kminion.labels" . | nindent 4}}
     {{- if .Values.serviceMonitor.additionalLabels}}
@@ -11,8 +12,9 @@ metadata:
 spec:
   selector:
     matchLabels:
-      {{- include "kminion.labels" . | nindent 4}}
+      {{- include "kminion.labels" . | nindent 6}}
   endpoints:
     - port: metrics
+      path: /metrics
       honorLabels: {{ .Values.serviceMonitor.honorLabels }}
 {{- end }}
