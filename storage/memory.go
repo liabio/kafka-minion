@@ -68,6 +68,7 @@ type topic struct {
 
 // ConsumerPartitionOffsetMetric represents an offset commit but is extended by further fields which can be
 // substituted using the given information (e. g. TotalCommitCount to calculate the commit rate)
+//ConsumerPartitionOffsetMetric代表偏移量提交，但由其他字段扩展，这些字段可以使用给定的信息替换（例如，TotalCommitCount以计算提交率）
 type ConsumerPartitionOffsetMetric struct {
 	Group            string
 	Topic            string
@@ -121,6 +122,7 @@ func NewMemoryStorage(opts *options.Options, consumerOffsetCh <-chan *kafka.Stor
 }
 
 // Start starts listening for incoming offset entries on the input channel so that they can be stored
+//Start开始侦听输入通道上的输入偏移量条目，以便将其存储
 func (module *MemoryStorage) Start() {
 	go module.consumerOffsetWorker()
 	go module.clusterWorker()

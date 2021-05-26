@@ -166,7 +166,9 @@ func (e *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	consumerOffsets := e.storage.ConsumerOffsets()
+	//分区低水位
 	partitionLowWaterMarks := e.storage.PartitionLowWaterMarks()
+	//分区高水位
 	partitionHighWaterMarks := e.storage.PartitionHighWaterMarks()
 	topicConfigs := e.storage.TopicConfigs()
 
@@ -299,6 +301,7 @@ func (e *Collector) collectConsumerOffsets(ch chan<- prometheus.Metric, offsets 
 			}).Warn("could not calculate partition lag because low water mark is missing")
 			continue
 		}
+		//分区低水位
 		partitionLowWaterMark := lowWaterMarks[offset.Topic][offset.Partition].WaterMark
 		if _, exists := highWaterMarks[offset.Topic][offset.Partition]; !exists {
 			errorTopics[offset.Topic] = true
@@ -308,15 +311,18 @@ func (e *Collector) collectConsumerOffsets(ch chan<- prometheus.Metric, offsets 
 			}).Warn("could not calculate partition lag because high water mark is missing")
 			continue
 		}
+		//分区高水位
 		partitionHighWaterMark := highWaterMarks[offset.Topic][offset.Partition].WaterMark
 
 		var lag int64
 		if offset.Offset > partitionHighWaterMark {
 			// Partition offsets are updated periodically, while consumer offsets continuously flow in. Hence it's possible
 			// that consumer offset might be ahead of the partition high watermark. For this case mark it as zero lag
+			//分区偏移量会定期更新，而使用者偏移量会不断流入。因此，使用者偏移量可能会在分区高水位线之前。在这种情况下，将其标记为零延迟
 			lag = 0
 		} else if offset.Offset < partitionLowWaterMark {
 			// If last committed offset does not exist anymore due to delete policy (e. g. 1day retention, 3day old commit)
+			//如果由于删除政策（例如1天保留，3天旧提交）而不再存在最后提交的偏移量
 			lag = partitionHighWaterMark - partitionLowWaterMark
 		} else {
 			lag = partitionHighWaterMark - offset.Offset
@@ -329,6 +335,7 @@ func (e *Collector) collectConsumerOffsets(ch chan<- prometheus.Metric, offsets 
 				lagByTopic:     make(map[string]int64),
 			}
 		}
+		//某个消费者组消费的offset,根据topic的offset累加lag,这个lag是其他的goroutine从__consumer_offset这个topic中获取的
 		groupLagsByGroupName[offset.Group].lagByTopic[offset.Topic] += lag
 		consumerGroupsMeta := e.storage.GroupMetadata()[offset.Group]
 		var consumerHost, consumerId string

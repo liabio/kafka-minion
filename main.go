@@ -47,6 +47,7 @@ func main() {
 
 	// Create storage module
 	cache := storage.NewMemoryStorage(opts, consumerOffsetsCh, clusterCh)
+	//启动缓存goroutine
 	cache.Start()
 
 	// Create cluster module

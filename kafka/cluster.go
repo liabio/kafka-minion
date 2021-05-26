@@ -28,6 +28,7 @@ type Cluster struct {
 }
 
 // PartitionWaterMark contains either the first or last known committed offset (water mark) for a partition
+//PartitionWaterMark包含分区的第一个或最后一个已知的提交偏移量（water mark）
 type PartitionWaterMark struct {
 	TopicName   string
 	PartitionID int32

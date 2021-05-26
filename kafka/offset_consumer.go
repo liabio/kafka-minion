@@ -68,6 +68,7 @@ func NewOffsetConsumer(opts *options.Options, storageChannel chan<- *StorageRequ
 }
 
 // Start creates partition consumer for each partition in that topic and starts consuming them
+//Start为该主题中的每个分区创建分区使用者，并开始使用它们
 func (module *OffsetConsumer) Start() {
 	// Create the consumer from the client
 	consumer, err := sarama.NewConsumerFromClient(module.client)
@@ -76,6 +77,7 @@ func (module *OffsetConsumer) Start() {
 	}
 
 	// Get the partition count for the offsets topic
+	//获取偏移量主题的分区数
 	partitions, err := module.client.Partitions(module.offsetsTopicName)
 	if err != nil {
 		log.WithFields(log.Fields{
@@ -85,6 +87,7 @@ func (module *OffsetConsumer) Start() {
 	}
 
 	// Start consumers for each partition with fan in
+	//通过风扇启动每个分区的使用者
 	log.WithFields(log.Fields{
 		"topic": module.offsetsTopicName,
 		"count": len(partitions),
