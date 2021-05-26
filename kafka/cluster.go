@@ -3,10 +3,10 @@ package kafka
 import (
 	"fmt"
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
-	"regexp"
 
 	"github.com/Shopify/sarama"
 	"github.com/google-cloud-tools/kafka-minion/options"
@@ -126,6 +126,7 @@ func (module *Cluster) mainLoop() {
 	go func() {
 		offsetRefresh := time.NewTicker(time.Second * 5)
 		for range offsetRefresh.C {
+			//5s执行一次
 			module.refreshAndSendTopicMetadata()
 		}
 	}()
